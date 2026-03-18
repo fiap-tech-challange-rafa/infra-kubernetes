@@ -1,0 +1,184 @@
+# Arquitetura - Infra Kubernetes
+
+## 📐 Diagrama de Componentes
+
+```
+┌──────────────────────────────────────────────────────────────┐
+│                    AWS VPC                                   │
+│                                                              │
+│  ┌─────────────────────────────────────────────────────────┐ │
+│  │         AWS EKS Cluster (Kubernetes 1.27+)             │ │
+│  │                                                         │ │
+│  │  ┌──────────────────────────────────────────────────┐  │ │
+│  │  │      Control Plane (Managed by AWS)             │  │ │
+│  │  │  - API Server                                   │  │ │
+│  │  │  - etcd                                         │  │ │
+│  │  │  - Controller Manager                           │  │ │
+│  │  │  - Scheduler                                    │  │ │
+│  │  └──────────────────────────────────────────────────┘  │ │
+│  │                                                         │ │
+│  │  ┌──────────────────────────────────────────────────┐  │ │
+│  │  │         Worker Nodes (EC2 - Auto Scaling)       │  │ │
+│  │  │                                                 │  │ │
+│  │  │  ┌──────────────────────────────────────────┐  │  │ │
+│  │  │  │ Node 1 (t3.medium)                       │  │  │ │
+│  │  │  │                                          │  │  │ │
+│  │  │  │ ┌──────────┐ ┌──────────┐ ┌──────────┐ │  │  │ │
+│  │  │  │ │Tech-App  │ │Prometheus│ │Redis     │ │  │  │ │
+│  │  │  │ │ Pod (3)  │ │ Pod      │ │ Pod      │ │  │  │ │
+│  │  │  │ └──────────┘ └──────────┘ └──────────┘ │  │  │ │
+│  │  │  └──────────────────────────────────────────┘  │  │ │
+│  │  │                                                 │  │ │
+│  │  │  ┌──────────────────────────────────────────┐  │  │ │
+│  │  │  │ Node 2 (t3.medium)                       │  │  │ │
+│  │  │  │ [Similar pods]                           │  │  │ │
+│  │  │  └──────────────────────────────────────────┘  │  │ │
+│  │  │                                                 │  │ │
+│  │  │  ┌──────────────────────────────────────────┐  │  │ │
+│  │  │  │ Node 3 (t3.medium)                       │  │  │ │
+│  │  │  │ [Similar pods]                           │  │  │ │
+│  │  │  └──────────────────────────────────────────┘  │  │ │
+│  │  └──────────────────────────────────────────────────┘  │ │
+│  │                                                         │ │
+│  │  ┌──────────────────────────────────────────────────┐  │ │
+│  │  │        Nginx Ingress Controller                 │  │ │
+│  │  │  - AWS Network Load Balancer                    │  │ │
+│  │  │  - Route /api/* → Tech-App Service             │  │ │
+│  │  │  - Route /auth/* → Auth Lambda (API Gateway)   │  │ │
+│  │  └──────────────────────────────────────────────────┘  │ │
+│  └─────────────────────────────────────────────────────────┘ │
+│                                                              │
+│  ┌─────────────────────────────────────────────────────────┐ │
+│  │              Persistent Storage                         │ │
+│  │  - EBS Volumes (StatefulSet data)                      │ │
+│  │  - EFS (Shared storage)                                │ │
+│  └─────────────────────────────────────────────────────────┘ │
+└──────────────────────────────────────────────────────────────┘
+         │                       │
+         │                       │
+    ┌────▼──────────┐   ┌────────▼────────┐
+    │ AWS RDS       │   │  CloudWatch     │
+    │ PostgreSQL    │   │  - Logs         │
+    │               │   │  - Metrics      │
+    │ - Clientes    │   │  - Alarms       │
+    │ - Ordens      │   │                 │
+    └───────────────┘   └─────────────────┘
+```
+
+## 🔄 Fluxo de Requisição
+
+```
+Client                    Ingress            Service           Pod (App)
+  │                         │                   │                  │
+  ├─ GET /api/ordens───────┤                   │                  │
+  │                         │                   │                  │
+  │                         ├─ Route to────────┤                  │
+  │                         │  tech-challenge  │                  │
+  │                         │  -service:80     │                  │
+  │                         │                   ├─ Forward to──────┤
+  │                         │                   │  :8080           │
+  │                         │                   │                  │
+  │                         │                   │                  ├─ Process Request
+  │                         │                   │                  │
+  │◄─ JSON Response ────────┤◄──────────────────┤◄─────────────────┤
+```
+
+## 🚀 Provisionamento com Terraform
+
+```bash
+# 1. Inicializar Terraform
+cd infra-kubernetes/terraform
+terraform init
+
+# 2. Planejar infraestrutura
+terraform plan -out=tfplan
+
+# 3. Aplicar plano
+terraform apply tfplan
+
+# 4. Configurar kubectl
+aws eks update-kubeconfig --region us-east-1 --name tech-challenge-cluster
+
+# 5. Verificar cluster
+kubectl get nodes
+kubectl get pods -n tech-challenge
+```
+
+## 📊 Autoscaling com HPA
+
+```yaml
+# HPA configuration
+minReplicas: 2
+maxReplicas: 10
+
+Triggers:
+- CPU: 70% (média)
+- Memory: 80% (média)
+
+Scale Up:
+- 100% de aumento a cada 30s
+- Máximo 2 pods por 30s
+
+Scale Down:
+- 50% de redução a cada 60s
+- Máximo 1 pod por 60s
+```
+
+## 🔐 Networking e Segurança
+
+- **VPC**: 10.0.0.0/16
+  - Public subnets: 10.0.10.0/24, 10.0.11.0/24, 10.0.12.0/24
+  - Private subnets: 10.0.1.0/24, 10.0.2.0/24, 10.0.3.0/24
+  
+- **Security Groups**: Restritivos
+  - Inbound: HTTPS (443), HTTP (80)
+  - Egress: Todos os protocolos (necessário para pulling images)
+
+- **Network Policies**: Isolamento de pods
+
+- **IAM**: OIDC Provider integrado para IRSA (IAM Roles for Service Accounts)
+
+## 📈 Monitoramento e Observabilidade
+
+```
+Prometheus (Scrape Config)
+  ├─ Metrics do K8s
+  ├─ Metrics da App
+  └─ Metrics do Sistema
+
+         │
+         ▼
+    Grafana Dashboards
+  ├─ Cluster Overview
+  ├─ Application Metrics
+  ├─ Resource Usage
+  └─ Business Metrics
+```
+
+## 🔧 Upgrades e Manutenção
+
+```bash
+# Upgrade de versão do K8s
+terraform apply -var="cluster_version=1.28"
+
+# Scale manual dos nodes
+terraform apply -var="node_count=5"
+
+# Atualizar Node Group
+aws eks update-nodegroup-config \
+  --cluster-name tech-challenge-cluster \
+  --nodegroup-name tech-challenge-node-group \
+  --scaling-config minSize=1,maxSize=10,desiredSize=5
+```
+
+## 🔗 Integração com Outros Repositórios
+
+- **auth-lambda**: Autenticação via API Gateway
+- **infra-database**: RDS PostgreSQL para persistência
+- **tech-challenge-app**: Aplicação principal running in K8s
+
+## 📚 Referências
+
+- [EKS Best Practices Guide](https://aws.github.io/aws-eks-best-practices/)
+- [Kubernetes Documentation](https://kubernetes.io/docs/)
+- [Terraform AWS Provider](https://registry.terraform.io/providers/hashicorp/aws/latest)
