@@ -76,6 +76,12 @@ variable "enable_ingress" {
   default     = true
 }
 
+variable "alert_email" {
+  description = "Email address for CloudWatch alerts"
+  type        = string
+  default     = "ops@example.com"
+}
+
 variable "tags" {
   description = "Tags to apply to all resources"
   type        = map(string)
